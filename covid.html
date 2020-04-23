@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+        <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+        <style type="text/css">
+            html {
+                font-family: sans-serif;
+            }
+            #sidebar {
+                display: flex;
+                flex-direction: column;
+                overflow-y: scroll;
+                min-width: 20vw;
+                max-height: 100vh;
+            }
+            #sidebar > div {
+                display: flex;
+                flex-direction: column;
+            }
+            #sidebar > div > span, #sidebar ul {
+                border: 1px solid black;
+                border-radius: 5px;
+                padding: .25em;
+                margin: .25em;
+            }
+            #sidebar > hr {
+                display: inline-block;
+                width: 80%;
+            }
+
+            #sidebar .button {
+                cursor: pointer;
+            }
+
+            #sidebar .button.enabled {
+                background-color: cyan;
+            }
+
+            #sidebar input[type=text] {
+                width: 100%;
+            }
+
+            #graph {
+                /*width: 100vw;*/
+                height: 100vh;
+            }
+
+            .not_implemented {
+                display: none !important;
+            }
+
+            ul.radio {
+                padding-left: 0;
+                list-style: none;
+            }
+            ul.radio > li {
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row">
+                <div id="sidebar" class="col-sm-1">
+                    <div id="date-selectors" class="not_implemented">
+                        <span><label for="start_date">Start date <input type="date" id="start_date" disabled></label></span>
+                        <span><label for="end_date">End date <input type="date" id="end_date" disabled></label></span>
+                    </div>
+                    <div id="options">
+                    </div>
+                    <hr>
+                    <div class="not_implemented">
+                        <span><input id="filter_country" type="text" placeholder="Filter countries"></span>
+                    </div>
+                    <div id="countries">
+                    </div>
+                </div>
+                <div class="col-sm-8" id="graph"><div></div></div>
+            </div>
+        </div>
+
+
+        <script src="https://code.highcharts.com/highcharts.js"></script>
+        <script type="text/javascript">
+
+function getSeries(data, country_code, correct_dates, slice_function) {
+    let country_data = data
+        .filter(value => value.CountryCode === country_code && value.RegionCode === null)
+        .map(day => {
+            day.ConfirmedPerMillion = day.Confirmed / day.Population * 1000000;
+            return day;
+        });
+
+    country_data = correct_dates.map(date => {
+        const item = country_data.find(day => day.Date === date);
+        if(item !== undefined) return item;
+        return { Date: date };
+    });
+
+    // test align with first case:
+    if(slice_function) {
+        country_data = country_data.slice(slice_function(country_data));
+    }
+    // country_data = country_data.slice(country_data.findIndex(day => day.Deaths > 0));
+    // console.log(total_cases)
+
+    let previous_day = null;
+    const country_data_with_daily = country_data.map((day, index) => {
+        day.DailyConfirmed = day.Confirmed - (previous_day !== null ? previous_day.Confirmed : 0);
+        day.DailyConfirmedPerMillion = day.DailyConfirmed / day.Population * 1000000;
+
+        day.DailyDeaths = day.Deaths - (previous_day !== null ? previous_day.Deaths : 0);
+        day.DailyDeathsPerMillion = day.DailyDeaths / day.Population * 1000000;
+
+        const last_seven_days = country_data.slice(Math.max(0, index - 6), index + 1);
+
+        day.DailyConfirmedAveraged = Math.round(
+            last_seven_days.map(d => d.DailyConfirmed).reduce((a, c) => a + c, 0) / last_seven_days.length
+        );
+        day.DailyDeathsAveraged = Math.round(
+            last_seven_days.map(d => d.DailyDeaths).reduce((a, c) => a + c, 0) / last_seven_days.length
+        );
+
+        previous_day = day;
+
+        return day;
+    });
+
+    return [
+        {
+            id: 'confirmed_total',
+            label: 'Total confirmed',
+            field: 'Confirmed',
+        },
+        {
+            id: 'confirmed_daily',
+            label: 'Daily confirmed',
+            field: 'DailyConfirmed',
+        },
+        {
+            id: 'confirmed_averaged',
+            label: 'Confirmed averaged',
+            field: 'DailyConfirmedAveraged',
+        },
+        {
+            id: 'deaths_total',
+            label: 'Total deaths',
+            field: 'Deaths',
+        },
+        {
+            id: 'deaths_daily',
+            label: 'Daily deaths',
+            field: 'DailyDeaths',
+        },
+        {
+            id: 'deaths_averaged',
+            label: 'Deaths averaged',
+            field: 'DailyDeathsAveraged',
+        },
+    ].map(serie => ({
+        id: { type: serie.id, country: country_code },
+        name: `${serie.label} (${country_code})`,
+        visible: false,
+        data: country_data_with_daily.map(day => ({
+            name: `${day.Key} - ${day.Date}`,
+            y: day[serie.field],
+        }))
+    }));
+}
+
+function createButton(text, enabled, onClick) {
+    const element = document.createElement('span');
+    element.classList.add('button');
+    element.classList.toggle('enabled', enabled);
+    element.innerHTML = text;
+    element.addEventListener('click', onClick);
+    return element;
+}
+
+function storageGetItemOrDefault(key, default_) {
+    const value = window.localStorage.getItem(key);
+    if(value !== null) {
+        return value;
+    } else {
+        return default_;
+    }
+}
+
+function storageGetBooleanOrDefault(key, default_) {
+    const value = window.localStorage.getItem(key);
+    if(value !== null) {
+        return value === "true";
+    } else {
+        return default_;
+    }
+}
+
+function storageSetItem(key, value) {
+    window.localStorage.setItem(key, value);
+}
+
+var global_data;
+
+function createElement(tag, attributes) {
+    let element = document.createElement(tag);
+    attributes = attributes || {};
+    for(key in attributes) {
+        element[key] = attributes[key];
+    }
+    return element;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const start_date = document.getElementById('start_date');
+    const end_date = document.getElementById('end_date');
+
+    const countries_to_show = ['CN', 'US', 'NL', 'DE', 'IT', 'ES', 'GB'];
+
+    const chart = Highcharts.chart('graph', {
+        credits: { enabled: false },
+        chart: { type: 'line' },
+        title: { useHTML: true,  text: '<text style="text-decoration: line-through">Corona</text> COVID-19 cases' },
+        legend: { enabled: false },
+    });
+
+    fetch('https://open-covid-19.github.io/data/data.json').then(response => response.json()).then(data => {
+        global_data = data;
+        const sidebar = document.getElementById('sidebar');
+        const sidebar_options = document.getElementById('options');
+
+        const range_options = [
+            {
+                name: 'date_align',
+                title: 'Align by:',
+                defaultChecked: 'by_date',
+                choices: [
+                    {
+                        value: 'by_date',
+                        label: 'Date',
+                    },
+                    {
+                        value: 'confirmed_first',
+                        label: 'Day of first confirmed',
+                        slice_function: data => data.findIndex(day => day.Confirmed > 0),
+                    },
+                    {
+                        value: 'confirmed_ten',
+                        label: 'Day of 10 confirmed',
+                        slice_function: data => data.findIndex(day => day.Confirmed >= 10),
+                    },
+                    {
+                        value: 'deaths_first',
+                        label: 'Day of first death',
+                        slice_function: data => data.findIndex(day => day.Deaths > 0),
+                    },
+                    {
+                        value: 'deaths_ten',
+                        label: 'Day of 10 deaths',
+                        slice_function: data => data.findIndex(day => day.Deaths >= 10),
+                    },
+                ],
+                onclick: (e, option, choice) => {
+                    renderData(data, choice.slice_function);
+                    storageSetItem(`range_${option.name}`, choice.value)
+                },
+            },
+        ];
+
+        for(option of range_options) {
+            let container = createElement('ul', { className: 'radio' });
+            if(option.title) {
+                let title = createElement('span', { innerHTML: option.title });
+                container.append(title);
+            }
+            const defaultChecked = storageGetItemOrDefault(`range_${option.name}`, option.defaultChecked);
+            option.checked = defaultChecked;
+            
+            for(let choice of option.choices) {
+                let radio = createElement('input', {
+                    type: 'radio',
+                    name: option.name,
+                    value: choice.value,
+                    checked: defaultChecked === choice.value || false,
+                    onclick: e => option.onclick(e, option, choice),
+                });
+
+                let element = createElement('li');
+                let label = createElement('label');
+                label.append(radio);
+                label.append(` ${choice.label}`);
+                element.append(label);
+
+                container.append(element);
+            }
+            sidebar_options.append(container);
+        }
+
+        const options = [
+            {
+                label: 'Show total cases',
+                defaultEnabled: false,
+                type: 'confirmed_total',
+            },
+            {
+                label: 'Show daily cases',
+                defaultEnabled: true,
+                type: 'confirmed_daily',
+            },
+            {
+                label: 'Show seven day average',
+                defaultEnabled: true,
+                type: 'confirmed_averaged',
+            },
+            {
+                label: 'Show total deaths',
+                defaultEnabled: false,
+                type: 'deaths_total',
+            },
+            {
+                label: 'Show daily deaths',
+                defaultEnabled: true,
+                type: 'deaths_daily',
+            },
+            {
+                label: 'Show deaths seven day average',
+                defaultEnabled: true,
+                type: 'deaths_averaged',
+            },
+        ];
+
+        for(const option of options) {
+            option.enabled = storageGetBooleanOrDefault(`option_${option.type}_enabled`, option.defaultEnabled);
+        }
+
+        for(const option of options) {
+            const button = createButton(option.label, option.enabled, e => optionSelect(e, option));
+            sidebar_options.appendChild(button);
+        }
+
+        const countries = data
+            // only countries with no region (this reduces load on unique function)
+            .filter(value => value.RegionCode === null)
+            // make unique
+            .filter((value, index, self) => {
+                return self.findIndex(value2 => value2.CountryCode === value.CountryCode) === index;
+            })
+            // take country codes
+            .map(value => {
+                const { CountryCode, CountryName, Population } = value;
+                return { CountryCode, CountryName, Population, 
+                    enabled: storageGetBooleanOrDefault(`country_${CountryCode}_enabled`, true) 
+                };
+            })
+            .filter(country => countries_to_show.includes(country.CountryCode))
+            .sort((valueA, valueB) => valueA.CountryName.localeCompare(valueB.CountryName));
+
+        const sidebar_countries = document.getElementById('countries');
+        for(const country of countries) {
+            const button = createButton(`${country.CountryName} (${country.CountryCode}, Pop. ${country.Population})`, country.enabled, e => countrySelect(e, country));
+            sidebar_countries.appendChild(button);
+        }
+
+        function renderData(data, slice_function) {
+
+            const dates = [...new Set(data.map(value => value.Date))];
+
+            start_date.min = end_date.min = start_date.value = dates[0];
+            start_date.max = end_date.max = end_date.value = dates[dates.length - 1];
+            start_date.disabled = end_date.disabled = false;
+
+            const series = countries.flatMap(country => getSeries(data, country.CountryCode, dates, slice_function));
+
+            if(slice_function === undefined || slice_function === null) {
+                chart.xAxis[0].setCategories(dates, false);
+            } else {
+                chart.xAxis[0].setCategories([], false);
+            }
+            for(let serie of series) {
+                let serie_ = chart.series.find(chart_serie => chart_serie.options.id.type === serie.id.type && chart_serie.options.id.country === serie.id.country);
+                if(!serie_) {
+                    serie_ = chart.addSeries(serie, false);
+                } else {
+                    serie_.setData(serie.data, false);
+                }
+                const option = options.find(option => option.type === serie_.options.id.type);
+                const country = countries.find(country => country.CountryCode === serie_.options.id.country);
+                serie_.setVisible(option.enabled && country.enabled, false);
+            }
+            chart.redraw();
+        }
+
+        function optionSelect(e, option) {
+            const { target } = e;
+            option.enabled = target.classList.toggle('enabled');
+            storageSetItem(`option_${option.type}_enabled`, option.enabled);
+            for(let serie of chart.series) {
+                if(serie.options.id.type === option.type) {
+                    const country = countries.find(country => serie.options.id.country === country.CountryCode);
+                    serie.setVisible(option.enabled && country.enabled, false);
+                }
+            }
+            chart.redraw(false);
+        }
+
+        function countrySelect(e, country) {
+            const { target } = e;
+            country.enabled = target.classList.toggle('enabled');
+            storageSetItem(`country_${country.CountryCode}_enabled`, country.enabled);
+            for(let serie of chart.series) {
+                if(serie.options.id.country === country.CountryCode) {
+                    const option = options.find(option => option.type === serie.options.id.type);
+                    serie.setVisible(option.enabled && country.enabled , false);
+                }
+            }
+            chart.redraw(false);
+        }
+
+        let date_align_slice_function = undefined;
+        for(let option of range_options) {
+            const choice = option.choices.find(choice => choice.value === option.checked);
+            if(option.name === 'date_align') {
+                date_align_slice_function = choice.slice_function;
+            }
+        }
+
+        renderData(data, date_align_slice_function);
+    });
+});
+
+        </script>
+    </body>
+</html>
