@@ -1,3 +1,3 @@
 jawsper.github.io
 
-\\( \pi \\)
+$\pi$
